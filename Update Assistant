@@ -1,0 +1,243 @@
+<#
+update_assistant.ps1
+
+
+https://social.technet.microsoft.com/Forums/windows/en-US/51104081-4ed7-4fdd-8b12-5d1f5be532ae/windows-10-feature-update-via-cmd-powershell-or-gpo?forum=win10itprogeneral
+
+https://community.spiceworks.com/topic/2301187-windows-10-update-assistant-command-line-switches
+
+If 10.0 < $os.version < 10.0.19044, installs and runs 'Windows 10 Update Assitant', otherwise uninstalls.
+
+Errata: 'Windows 10 Update Assistant' does not uninstall as 'System'
+
+
+Sailer, Adam
+2022.02.16
+#>
+
+
+$cs = gwmi win32_ComputerSystem
+
+$os = gwmi win32_OperatingSystem
+
+$proc = gwmi win32_Processor
+
+$source = "$env:Temp\source"
+
+$whatIf = $false
+
+
+Function Prep {
+
+    write-host "`n`n@@ Prep" -fore cyan
+    
+    
+    dir $env:Temp | remove-item -recurse -force -ea SilentlyContinue
+
+    <#
+    $path = 'HKLM:\Software\Policies\Microsoft\Internet Explorer\Main'
+
+    set-itemProperty -path $path -name DisableFirstRunCustomize -value 1
+	#>
+
+    if ($proc.Architecture | % { $_ -in @(0,9) }) { ## ARM not supported
+
+        $uri = 'https://go.microsoft.com/fwlink/?LinkID=799445'
+
+        $leaf = 'upgrade.exe'
+
+        new-item -path $source -itemType directory -force | out-null
+
+        invoke-webRequest -uri $uri -useBasicParsing -outFile $source\$leaf
+    }
+
+    dir $source
+}
+
+
+Function KillApps {
+
+	write-host "`n`n@@ KillApps" -fore cyan
+
+    $array = get-process | ? { $_.Name -imatch 'Windows10UpgraderApp' }
+    $array; $array | stop-process -force
+}
+
+
+Function Uninstall {
+
+	param([string]$inp)
+    
+
+    write-host "`n`n@@ Uninstall" -fore cyan
+    	
+    if (!$inp) { return }
+
+
+    $keys = @()
+    $keys += 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+    $keys += 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+
+    dir $keys -ea 0 | gp | ? { $_.DisplayName -imatch $inp } | % { $item = $_
+
+        $item.UninstallString | ? { $_ } | % {
+
+            $app = ($_ | sls '(?<=").+(?=")').Matches.Value
+
+            $options = @(
+                '/uninstall'
+                '/forceuninstall'
+                )
+
+            write-host "`nUninstall : $($item.DisplayName) $($item.DisplayVersion)"
+            write-host $item.PSPath -fore cyan
+            write-host $app -fore darkGray
+			$options | % { write-host $_ -fore darkGray }
+
+            if (!$whatIf) {
+                
+                try {
+                    $process = start-process -filePath $app -argumentList $options -passThru -wait
+                    $process.ExitCode
+                    $process.ExitCode | ? { $_ -notin @(0,1605) } | % { exit $_ }
+                }
+                catch {
+                    write-host $error[0] -fore red
+                }
+                finally {
+                    remove-item $env:SystemRoot\UpdateAssistant -recurse -force -ea SilentlyContinue -whatIf:$whatIf
+                }
+            }
+        }
+    }
+}
+
+
+Function Purge {
+
+    write-host "`n`n@@ Purge" -fore cyan
+
+
+    $array = @()
+    $array += "$env:SystemDrive\Windows10Upgrade"
+    $array += "$env:SystemRoot\UpdateAssistant"
+
+    $paths = @(
+        $env:ProgramFiles
+        ,${env:ProgramFiles(x86)}
+        ,"$env:ProgramData\Start Menu\Programs"
+        ,"$env:Public\Desktop"
+        ,'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+        ,'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+        ) | ? { test-path $_ }
+   
+    dir $paths | gp | ? { $_ -imatch 'Windows 10 Update Assistant' } | % {
+
+        $array += $_.PSPath
+    }
+
+    $array | ? { test-path $_ } | sort-object | % {
+
+        $_; $_ | remove-item -recurse -force -ea SilentlyContinue -whatIf:$whatIf
+    }
+}
+
+
+Function Setup {
+
+    write-host "`n`n@@ Setup" -fore cyan
+
+
+    dir $source -recurse -include upgrade.exe | % { $app = $_
+
+        $options = @(
+            '/quietinstall'	    
+            '/auto upgrade'	    
+            '/skipeula'
+            "/copylogs $source"
+            '/norestartui'
+			'/uninstalluponexit'
+			'/uninstalluponupgrade'
+	        )
+
+        write-host "`n$app"
+        $options | % { write-host $_ -fore darkGray }
+
+
+        try {
+            if (!$whatIf) {
+
+                $process = start-process -filePath $app -argumentList $options -passThru -wait
+                $process.ExitCode
+            }
+        }
+        catch {
+            write-host $error[0] -fore red
+        }
+    }
+}
+
+
+Function Cleanup {
+
+    write-host "`n`n@@ Cleanup" -fore cyan
+
+
+    powercfg -hibernate off
+    
+    get-volume | ? { $_.DriveLetter -and ($_.DriveType -eq 'fixed') } | % { disable-computerRestore "$($_.DriveLetter):\" -verbose }    
+
+    @(100..0) | % { vssadmin resize shadowstorage /on=C: /for=C: /maxsize=$_% | out-null }
+
+    vssadmin list shadowstorage
+
+    clear-recycleBin -force -ea 0
+
+        
+    $path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
+
+    dir $path | gp | ? { $_ -imatch 'StateFlags0009' } | % { remove-itemProperty -path $_.PSPath -name 'StateFlags0009' }
+    dir $path | gp | ? { $_ -imatch 'StateFlags1337' } | % { remove-itemProperty -path $_.PSPath -name 'StateFlags1337' }
+        
+    new-itemProperty -path "$path\Temporary Setup Files" -propertyType dword -name StateFlags1009 -value 0x2 -force | out-null
+    new-itemProperty -path "$path\Previous Installations" -propertyType dword -name StateFlags1009 -value 0x2 -force | out-null    
+}
+
+
+##
+##
+
+
+Clear
+
+$os | select Caption,Version,OSArchitecture | fl
+
+
+if ([version]$os.Version -gt [version]'10.0') {
+
+    KillApps
+    Uninstall 'windows 10 update assistant'
+    Purge    
+
+    if ([version]$os.Version -lt [version]'10.0.19044') {
+    
+        if ($os.Caption -imatch 'windows 10') {
+
+            Cleanup
+
+            if ($cs.Model -inotmatch 'vmware') {
+            
+                Prep
+                Setup
+            }
+        }
+    }
+    else {
+
+        Cleanup
+
+        cleanmgr.exe /SAGERUN:1009 /verylowdisk
+    }
+}
+
+exit 0
