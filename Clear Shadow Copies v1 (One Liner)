@@ -1,0 +1,1 @@
+dir c:\ -recurse -force -file -ea 0 -include *.log | ? { $_.LastWriteTime -lt (get-date).AddMonths(-1) } | remove-item -force -ea 0; get-volume;
