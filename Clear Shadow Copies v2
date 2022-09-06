@@ -1,0 +1,18 @@
+Function Shadows {
+    write-host "`nBefore:" -fore cyan
+    vssadmin list shadowstorage
+    $volumes = @(gwmi win32_Volume | select DeviceID,Capacity,FreeSpace,DriveLetter); ## $volumes | fl
+    gwmi win32_ShadowStorage | select AllocatedSpace,DiffVolume,MaxSpace,UsedSpace,Volume | % {
+        $shadow = $_
+        $forVol = $volumes | ? { $_.DeviceID -imatch ($shadow.Volume | sls '{.+}').Matches.Value }; ## $forVol | fl
+        $onVol = $volumes | ? { $_.DeviceID -imatch ($shadow.DiffVolume | sls '{.+}').Matches.Value }; ## $onVol | fl
+        @(100..1) | % { vssadmin resize shadowstorage /on=$($onVol.DriveLetter) /for=$($forVol.DriveLetter) /maxsize=$_% | out-null };
+    }
+    ## vssadmin delete shadows /all /quiet
+    write-host "`nAfter:" -fore cyan
+    vssadmin list shadowstorage
+}
+##
+##
+Clear
+Shadows
