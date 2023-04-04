@@ -3,14 +3,20 @@ setup.ps1
 ​
 3CX
 ​
+Usage:
+powershell -ep bypass -file <path>\setup.ps1 -setup ## uninstall then install
+powershell -ep bypass -file <path>\setup.ps1 ## uninstall only
+​
 Sailer, Adam
-2021.07.02
+2023.03.31
 #>
 ​
 ​
-$invoke = split-path -path $myInvocation.MyCommand.Path -parent
+param(
+    [parameter(mandatory=$false)]
+    [switch]$setup
+    )
 ​
-$arch = if ((gwmi win32_Processor).AddressWidth -eq 64) { 'x64' } else { 'x86' }
 ​
 $whatIf = $false
 ​
@@ -26,7 +32,7 @@ Function KillApps {
     $array = get-process | ? { $_.Path -imatch '3cx' }
     $array; $array | stop-process -force
 ​
-    dir $env:Temp | remove-item -recurse -force -ea silentlyContinue
+    dir $env:Temp | remove-item -recurse -force -ea 0
 }
 ​
 ​
@@ -44,7 +50,7 @@ Function Uninstall {
     $keys += 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
     $keys += 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
 ​
-    dir $keys -ea SilentlyContinue | gp | ? { $_.DisplayName -imatch $inp } | % { $item = $_
+    dir $keys -ea 0 | gp | ? { $_.DisplayName -imatch $inp } | % { $item = $_
 ​
         $item.UninstallString | ? { $_ } | % {
 ​
@@ -70,16 +76,49 @@ Function Uninstall {
                 try {
                     $process = start-process -filePath $app -argumentList $options -wait -passThru
                     $process.ExitCode
-                    $process.ExitCode | ? { $_ -notin @(0,1605) } | % { exit $_ }
+                    $process.ExitCode | ? { $_ -notin @(0,1605,1612) } | % { exit $_ }
                 }
                 catch {
                     write-host $error[0] -fore red
                 }
                 finally {
+                    $item.PSPath | remove-item -recurse -force -ea 0
                 }
             }
         }
     }
+}
+​
+​
+Function Purge {
+​
+    write-host "`n`n@@ Purge" -fore cyan
+​
+​
+    ##
+    ## Directories
+​
+    $paths = @(
+        $env:ProgramData
+        $env:ProgramFiles
+        ${env:ProgramFiles(x86)}
+        "$env:SystemDrive\Users\*\AppData\Local"
+        "$env:SystemDrive\Users\*\AppData\Roaming"
+        )
+​
+    dir $paths -recurse -force -directory -ea 0 | ? { $_ -imatch '3cx' } | select -exp FullName | remove-item -recurse -force -ea 0 -verbose -whatIf:$whatIf
+​
+​
+    ##
+    ## Links
+    
+    $paths = @(
+        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs"
+        "$env:SystemDrive\Users\*\Desktop"
+        )
+​
+    dir $paths -recurse -force -include *.lnk -ea 0 | ? { $_ -imatch '3cx' } | select -exp FullName | remove-item -recurse -force -ea 0 -verbose -whatIf:$whatIf
+​
 }
 ​
 ​
@@ -88,7 +127,7 @@ Function Setup {
     write-host "`n`n@@ Setup" -fore cyan
     
     
-    dir $invoke\setup -recurse -include 3CXPhone*.msi | % { $app = $_
+    dir $PSScriptRoot\setup -recurse -include 3CX*.msi | % { $app = $_
 ​
 		$options = @(
             '/qn'
@@ -124,6 +163,22 @@ Function Setup {
 ​
 ​
 Clear
-KillApps
-Uninstall '^3cxPhone'
-Setup
+​
+try {
+​
+    start-transcript -path $env:ProgramData\Scripts\3CX.log | out-null
+​
+    KillApps
+    Uninstall '^3cx( Desktop|Phone)'
+    Purge
+​
+    if ($setup) { Setup }
+}
+catch {
+​
+    write-host $error[0] -fore red
+}
+finally {
+​
+    stop-transcript | out-null
+}
