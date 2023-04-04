@@ -1,0 +1,22 @@
+Here is a shell script to get everyone started with the cleanup.
+Create a file on your server;
+nano 3cx-desktopapp-cleanup.sh
+-------------------------------------
+# Disable 3CX Unattended-Upgrades Service
+systemctl stop unattended-upgrades
+# Collect the version of 3CX Desktop Apps on the Server
+cd /var/lib/3cxpbx/Instance1/Data/Http/electron
+ls -la * > /root/3cx-desktop-versions.log
+# Remove the files
+rm -rf /var/lib/3cxpbx/Instance1/Data/Http/electron/osx/*.dmg
+rm -rf /var/lib/3cxpbx/Instance1/Data/Http/electron/osx/*.zip
+rm -rf /var/lib/3cxpbx/Instance1/Data/Http/electron/windows/*.msi
+rm -rf /var/lib/3cxpbx/Instance1/Data/Http/electron/windows/*.nupkg
+--------------------------------------
+run the file
+sh 3cx-desktopapp-cleanup.sh
+You can check the status of the service
+systemctl status unattended-upgrades
+You should see it shutdown
+root@3cx:# systemctl status unattended-upgrades
+unattended-upgrades.service - Unattended Upgrades Shutdown
