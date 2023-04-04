@@ -1,0 +1,10 @@
+$softwareName = "3CX Desktop App" # Replace with the name of the software you want to check
+$version = "18.12.416.0" # Replace with the version number of the software you want to check
+
+$installedSoftware = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -eq $softwareName -and $_.Version -eq $version}
+
+if ($installedSoftware) {
+    Write-Host "True"
+} else {
+    Write-Host "False"
+}
