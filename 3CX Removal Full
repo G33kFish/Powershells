@@ -1,0 +1,129 @@
+<#
+setup.ps1
+​
+3CX
+​
+Sailer, Adam
+2021.07.02
+#>
+​
+​
+$invoke = split-path -path $myInvocation.MyCommand.Path -parent
+​
+$arch = if ((gwmi win32_Processor).AddressWidth -eq 64) { 'x64' } else { 'x86' }
+​
+$whatIf = $false
+​
+​
+##
+##
+​
+​
+Function KillApps {
+​
+	write-host "`n`n@@ KillApps" -fore cyan
+​
+    $array = get-process | ? { $_.Path -imatch '3cx' }
+    $array; $array | stop-process -force
+​
+    dir $env:Temp | remove-item -recurse -force -ea silentlyContinue
+}
+​
+​
+Function Uninstall {
+​
+	param([string]$inp)
+    
+​
+    write-host "`n`n@@ Uninstall" -fore cyan
+    	
+    if (!$inp) { return }
+​
+​
+    $keys = @()
+    $keys += 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+    $keys += 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+​
+    dir $keys -ea SilentlyContinue | gp | ? { $_.DisplayName -imatch $inp } | % { $item = $_
+​
+        $item.UninstallString | ? { $_ } | % {
+​
+            $app = $_; $options = '/s'
+​
+            if ($_ -imatch 'msiexec') {
+​
+                $app = 'msiexec.exe'
+                $guid = ($_ | sls '{.+}').Matches.Value
+                $options = @(
+                    '/qn'
+                    "/x $guid"
+                    '/norestart'
+                    )
+            }
+​
+            write-host "`nUninstall : $($item.DisplayName) $($item.DisplayVersion)"
+            write-host $item.PSPath -fore cyan
+			$options | % { write-host $_ -fore darkGray }
+​
+            if (!$whatIf) {
+                
+                try {
+                    $process = start-process -filePath $app -argumentList $options -wait -passThru
+                    $process.ExitCode
+                    $process.ExitCode | ? { $_ -notin @(0,1605) } | % { exit $_ }
+                }
+                catch {
+                    write-host $error[0] -fore red
+                }
+                finally {
+                }
+            }
+        }
+    }
+}
+​
+​
+Function Setup {
+​
+    write-host "`n`n@@ Setup" -fore cyan
+    
+    
+    dir $invoke\setup -recurse -include 3CXPhone*.msi | % { $app = $_
+​
+		$options = @(
+            '/qn'
+            "/i `"$app`""
+            '/norestart'
+            'allusers=1'
+            )
+​
+        write-host "`nSetup : $($app.Name)"
+		$options | % { write-host $_ -fore darkGray }
+		
+        if (!$whatIf) {
+        
+            try {           
+                $process = start-process -filePath msiexec.exe -argumentList $options -wait -passThru
+                $process.ExitCode
+                $process.ExitCode | ? { $_ -notin @(0) } | % { exit $_ }
+            }
+            catch {
+                write-host $error[0] -fore red
+            }
+            finally {
+​
+                dir $env:Public\Desktop -recurse -include *.lnk | ? { $_ -imatch '3CX' } | remove-item -force
+            }
+        }
+	}
+}
+​
+​
+##
+##
+​
+​
+Clear
+KillApps
+Uninstall '^3cxPhone'
+Setup
