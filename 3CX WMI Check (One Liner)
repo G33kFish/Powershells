@@ -1,0 +1,1 @@
+wmic product where name="3CX Desktop App" call uninstall /nointeractive
