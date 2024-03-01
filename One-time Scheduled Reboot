@@ -1,0 +1,79 @@
+<#
+reboot_at.ps1
+
+Creates a one-time scheduled reboot task
+
+#>
+
+
+param(
+	[parameter(mandatory=$true)]
+	[validateRange(0,24)]
+	[int]$hour
+	,
+	[parameter(mandatory=$true)]
+	[validateRange(0,59)]
+	[int]$minute
+	)
+
+
+$fmt = 'yyyy.MM.dd HH:mm:ss'
+
+$date = get-date
+
+$desired = get-date -Hour $hour -Minute $minute -Second 0
+
+if ($desired -lt $date) { $desired = $desired.AddDays(1) }
+
+$name = 'Reboot'
+
+
+##
+##
+
+
+Clear
+
+(get-date $date -format $fmt)
+
+(get-date $desired -format $fmt)
+
+get-scheduledTask | ? { $_.TaskName -ieq 'reboot' } | select *
+
+
+##
+##
+
+write-host "`n@@ Principal" -fore cyan
+
+$principal = new-scheduledTaskPrincipal -id Author -userId System -logonType ServiceAccount
+
+$principal
+
+
+##
+##
+
+write-host "`n@@ Action" -fore cyan
+
+$action = new-scheduledTaskAction -execute powershell.exe -argument '-ep bypass -noProfile -windowStyle Hidden -command "& { restart-computer -force }"'
+
+$action
+
+
+##
+##
+
+write-host "`n@@ Trigger" -fore cyan
+
+$trigger = new-scheduledTaskTrigger -Once -At $desired
+
+$trigger
+
+
+##
+##
+
+write-host "`n@@ Register" -fore cyan
+
+register-scheduledTask -action $action -trigger $trigger -TaskName $name -description "Reboot @ $(get-date $desired -format $fmt)" -force
