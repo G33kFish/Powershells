@@ -1,0 +1,214 @@
+<#
+update_only.ps1
+
+Google Chrome Update Only
+
+x64
+x86
+
+Source:
+https://chromeenterprise.google/browser/download/#windows-tab
+
+
+Turning down omahaproxy.appspot.com on March 31, 2023
+https://groups.google.com/a/chromium.org/g/chromium-dev/c/uH-nFrOLWtE
+https://developer.chrome.com/docs/web-platform/versionhistory/examples
+
+
+https://noirth.com/threads/check-latest-google-chrome-version-powershell.7874/
+http://www.chromium.org/administrators/policy-list-3
+https://xenappblog.com/2018/download-and-install-latest-Google-Chrome-enterprise/
+
+#>
+
+
+$product = 'Google Chrome'
+
+$source = "$env:Temp\source"
+
+$whatIf = $false
+
+
+##
+##
+
+
+Function Query {
+
+	[cmdletBinding()]
+	param (
+		[parameter(valueFromPipeline)]
+		[validateNotNullOrEmpty()]
+		[string]$pattern
+		)
+
+	begin {
+
+		$keys = @()
+		$keys += 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+		$keys += 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+	}
+
+	process {
+
+		dir $keys -ea 0 | gp | ? { $_.DisplayName -imatch $pattern } | select DisplayName,DisplayVersion,Publisher,UninstallString | sort DisplayName | write-output
+	}
+
+	end {
+	}
+}
+
+
+Function Prep {
+
+	write-host "`n`n@@ Prep" -fore cyan
+
+
+	dir $env:Temp | remove-item -recurse -force -ea 0
+
+	$path = 'HKLM:\Software\Policies\Microsoft\Internet Explorer\Main'
+
+	new-item $path -force | set-itemProperty -name DisableFirstRunCustomize -value 1
+
+
+	##
+	## Current
+
+	$current = $null
+
+	$current = [System.Version]('^Google Chrome$' | Query | select -exp DisplayVersion)
+
+
+	if ($current) {
+
+		try {
+
+
+			##
+			## Available
+
+			$available = $null
+
+			#### $date = $(get-date -Format u) -replace '\s','T'
+
+			#### $uri = "https://versionhistory.googleapis.com/v1/chrome/platforms/win/channels/stable/versions/all/releases?filter=endtime>$date"; ## $uri
+
+			$uri = "https://versionhistory.googleapis.com/v1/chrome/platforms/win/channels/stable/versions/all/releases?filter=fraction=1"; ## $uri
+
+
+			[Net.ServicePointManager]::SecurityProtocol = 'tls12, tls11'
+
+			$data = invoke-restMethod -uri $uri
+
+			#### $data | select -exp releases | sort { [version]$_.version } -descending | ogv
+
+			$data | select -exp releases | sort { [version]$_.version } -descending | select -first 1 | % {
+
+				$available = [version]$_.version
+			}
+
+			write-host "`n$product $available is available"
+
+
+			##
+			## Compare
+
+			if ($current -lt $available) {
+
+				write-host "`n$product $current will be updated"
+
+				gcim win32_Processor | ? { $_.Architecture -in @(0,9) } | select -first 1 | % {
+
+					$uri = 'https://dl.Google.com/tag/s/dl/Chrome/install/GoogleChromestandaloneenterprise.msi'
+
+					if ($_.AddressWidth -eq 64) { $uri = $uri -replace '\.msi','64.msi' }
+
+					$leaf = split-path $uri -leaf
+
+
+					new-item -path $source -itemType directory -force | out-null
+
+					$progressPreference = 'SilentlyContinue'
+
+					invoke-webRequest -uri $uri -useBasicParsing -outFile $source\$leaf
+
+					Setup
+				}
+			}
+			else {
+
+				write-host "`n$product $available is already installed"
+			}
+		}
+		catch {
+
+			write-host $error[0] -fore red
+		}
+		finally {
+
+			$progressPreference = 'Continue'
+		}
+	}
+	else {
+
+		write-host "`n$product is not currently installed"
+	}
+}
+
+
+Function Setup {
+
+	write-host "`n`n@@ Setup" -fore cyan
+
+
+	dir $source -recurse -include *.msi -ea 0 | ? { $_ -imatch 'ChromeStandalone' } | % { $app = $_
+
+		$options = @(
+			'/qn'
+			"/i `"$app`""
+			'/norestart'
+			'allusers=1'
+			)
+
+		write-host "`nSetup : $($app.Name)"
+		$options | % { write-host $_ -fore darkGray }
+
+		if (!$whatIf) {
+
+			try {
+
+				$process = start-process -filePath msiexec.exe -argumentList $options -wait -passThru
+				$process.ExitCode
+				$process.ExitCode | ? { $_ -notin @(0,3010) } | % { exit $_ }
+			}
+			catch {
+
+				write-host $error[0] -fore red
+			}
+			finally {
+			}
+		}
+	}
+}
+
+
+##
+##
+
+
+Clear
+
+try {
+
+	start-transcript -path $env:ProgramData\Scripts\GoogleChrome.log | out-null
+
+	Prep
+}
+catch {
+
+	write-host $error[0] -fore red
+}
+finally {
+
+	stop-transcript | out-null
+}
