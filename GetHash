@@ -1,0 +1,5 @@
+Get-Filehash C:/{Destination} -A SHA256
+(Get-FileHash C:/{Destination} -A SHA256).Hash -eq "Orignal Hash"
+
+
+Get-FileHash -Algorithm MD5 C:/{Destination}
