@@ -1,0 +1,5 @@
+# Open password export pages safely
+
+Start-Process "chrome://settings/passwords"
+Start-Process "edge://settings/passwords"
+Start-Process "about:logins"
