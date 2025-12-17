@@ -1,0 +1,77 @@
+# ===============================
+# Fix .EXE File Association
+# ===============================
+
+# Ensure script is running as Administrator
+If (-not ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole] "Administrator"))
+{
+    Write-Error "Please run PowerShell as Administrator."
+    exit 1
+}
+
+Write-Host "[*] Repairing .exe file associations..." -ForegroundColor Cyan
+
+$regFixes = @(
+    @{
+        Path = "HKCR\.exe"
+        Name = "(Default)"
+        Value = "exefile"
+        Type = "String"
+    },
+    @{
+        Path = "HKCR\exefile"
+        Name = "(Default)"
+        Value = "Application"
+        Type = "String"
+    },
+    @{
+        Path = "HKCR\exefile\shell\open\command"
+        Name = "(Default)"
+        Value = '"%1" %*'
+        Type = "String"
+    },
+    @{
+        Path = "HKCR\exefile\shell\runas\command"
+        Name = "(Default)"
+        Value = '"%1" %*'
+        Type = "String"
+    },
+    @{
+        Path = "HKCR\exefile\DefaultIcon"
+        Name = "(Default)"
+        Value = "%1"
+        Type = "String"
+    }
+)
+
+foreach ($fix in $regFixes) {
+    try {
+        if (-not (Test-Path $fix.Path)) {
+            New-Item -Path $fix.Path -Force | Out-Null
+        }
+
+        New-ItemProperty `
+            -Path $fix.Path `
+            -Name $fix.Name `
+            -Value $fix.Value `
+            -PropertyType $fix.Type `
+            -Force | Out-Null
+
+        Write-Host "[+] Fixed $($fix.Path)" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "[-] Failed to fix $($fix.Path): $_"
+    }
+}
+
+# Reset user choice overrides (common cause of exe breakage)
+Write-Host "[*] Removing UserChoice override..." -ForegroundColor Cyan
+Remove-Item `
+    -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.exe\UserChoice" `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+Write-Host "`n[✓] .exe file association repair complete." -ForegroundColor Green
+Write-Host "You may need to restart Explorer or reboot for full effect." -ForegroundColor Yellow
