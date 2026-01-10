@@ -1,0 +1,101 @@
+<#
+.SYNOPSIS
+    Moves all disabled Active Directory user accounts to a specified OU.
+
+.DESCRIPTION
+    This script identifies all disabled user accounts in Active Directory
+    and moves them to a designated Organizational Unit (OU).
+    It includes validation, error handling, and optional logging.
+
+.REQUIREMENTS
+    - ActiveDirectory PowerShell module
+    - Sufficient permissions to move AD objects
+
+.NOTES
+    Run from an elevated PowerShell session with AD privileges.
+#>
+
+# -------------------------------
+# Configuration
+# -------------------------------
+
+# Target OU where disabled users will be moved
+$targetOU = "OU=DisabledUsers,DC=yourdomain,DC=com"
+
+# Optional log file (set to $null to disable logging)
+$logFile = "C:\Logs\Move-DisabledUsers.log"
+
+# -------------------------------
+# Helper Functions
+# -------------------------------
+
+function Write-Log {
+    param (
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $entry = "$timestamp [$Level] $Message"
+
+    Write-Host $entry
+
+    if ($logFile) {
+        Add-Content -Path $logFile -Value $entry
+    }
+}
+
+# -------------------------------
+# Prerequisite Checks
+# -------------------------------
+
+try {
+    Import-Module ActiveDirectory -ErrorAction Stop
+    Write-Log "ActiveDirectory module loaded."
+} catch {
+    Write-Error "ActiveDirectory module not available. Exiting."
+    return
+}
+
+# Validate target OU exists
+try {
+    Get-ADOrganizationalUnit -Identity $targetOU -ErrorAction Stop | Out-Null
+    Write-Log "Target OU validated: $targetOU"
+} catch {
+    Write-Error "Target OU does not exist or is inaccessible: $targetOU"
+    return
+}
+
+# -------------------------------
+# Get Disabled Users
+# -------------------------------
+
+try {
+    $disabledUsers = Get-ADUser `
+        -Filter { Enabled -eq $false } `
+        -Properties DistinguishedName, SamAccountName
+
+    Write-Log "Found $($disabledUsers.Count) disabled user account(s)."
+} catch {
+    Write-Error "Failed to query disabled users: $_"
+    return
+}
+
+# -------------------------------
+# Move Users
+# -------------------------------
+
+foreach ($user in $disabledUsers) {
+    try {
+        Move-ADObject `
+            -Identity $user.DistinguishedName `
+            -TargetPath $targetOU `
+            -ErrorAction Stop
+
+        Write-Log "Moved user '$($user.SamAccountName)' to $targetOU"
+    } catch {
+        Write-Log "Failed to move user '$($user.SamAccountName)': $_" "ERROR"
+    }
+}
+
+Write-Log "Script execution completed."
