@@ -1,0 +1,155 @@
+<#
+.SYNOPSIS
+Moves all disabled AD user accounts to a designated OU, with auditing and error handling.
+
+.DESCRIPTION
+- Queries AD for disabled user accounts (Enabled -eq $false)
+- Moves each account to the specified target OU (if not already there)
+- Handles:
+  - Non-existing OU
+  - Permission / access issues
+  - Per-object move failures
+- Logs all actions to a timestamped log file (CSV-like, easy to ingest)
+
+.REQUIREMENTS
+- RSAT ActiveDirectory module
+- Appropriate permissions to move objects into the target OU
+
+.USAGE
+- Test run first (no changes):
+    .\Move-DisabledUsersToOU.ps1 -TargetOU "OU=DisabledUsers,DC=example,DC=com" -WhatIf
+
+- Real run:
+    .\Move-DisabledUsersToOU.ps1 -TargetOU "OU=DisabledUsers,DC=example,DC=com"
+#>
+
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$TargetOU,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$LogPath = $(Join-Path $PSScriptRoot ("MoveDisabledUsers_{0}.log" -f (Get-Date -Format "yyyyMMdd_HHmmss"))),
+
+    [Parameter(Mandatory = $false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SearchBase # optional: limit where you search for disabled users
+)
+
+function Write-AuditLog {
+    param(
+        [Parameter(Mandatory=$true)][string]$Action,
+        [Parameter(Mandatory=$true)][string]$Status,
+        [Parameter(Mandatory=$true)][string]$Message,
+        [Parameter(Mandatory=$false)][string]$SamAccountName = "",
+        [Parameter(Mandatory=$false)][string]$UserDN = "",
+        [Parameter(Mandatory=$false)][string]$SourceOU = "",
+        [Parameter(Mandatory=$false)][string]$TargetOUValue = ""
+    )
+
+    $entry = [pscustomobject]@{
+        Timestamp      = (Get-Date).ToString("o")
+        Action         = $Action
+        Status         = $Status
+        SamAccountName = $SamAccountName
+        UserDN         = $UserDN
+        SourceOU       = $SourceOU
+        TargetOU       = $TargetOUValue
+        Message        = $Message
+    }
+
+    # Ensure the log directory exists
+    $dir = Split-Path -Path $LogPath -Parent
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -Path $dir -ItemType Directory -Force | Out-Null
+    }
+
+    # Append as CSV-like line (safe for parsing; header written once)
+    if (-not (Test-Path -LiteralPath $LogPath)) {
+        $entry | Export-Csv -Path $LogPath -NoTypeInformation
+    } else {
+        $entry | Export-Csv -Path $LogPath -NoTypeInformation -Append
+    }
+}
+
+try {
+    Import-Module ActiveDirectory -ErrorAction Stop
+    Write-AuditLog -Action "INIT" -Status "OK" -Message "ActiveDirectory module imported." -TargetOUValue $TargetOU
+}
+catch {
+    Write-AuditLog -Action "INIT" -Status "FAIL" -Message ("Failed to import ActiveDirectory module: {0}" -f $_.Exception.Message) -TargetOUValue $TargetOU
+    throw
+}
+
+# Validate target OU exists and is an OU
+try {
+    $ou = Get-ADOrganizationalUnit -Identity $TargetOU -ErrorAction Stop
+    Write-AuditLog -Action "VALIDATE_OU" -Status "OK" -Message "Target OU found." -TargetOUValue $TargetOU
+}
+catch {
+    $msg = "Target OU does not exist or is not accessible: $TargetOU. Error: $($_.Exception.Message)"
+    Write-AuditLog -Action "VALIDATE_OU" -Status "FAIL" -Message $msg -TargetOUValue $TargetOU
+    throw $msg
+}
+
+# Build query for disabled users
+$filter = { Enabled -eq $false }
+
+try {
+    $params = @{
+        Filter     = $filter
+        Properties = @("DistinguishedName","SamAccountName","Enabled")
+        ErrorAction= "Stop"
+    }
+    if ($SearchBase) { $params["SearchBase"] = $SearchBase }
+
+    $disabledUsers = Get-ADUser @params
+    Write-AuditLog -Action "QUERY" -Status "OK" -Message ("Found {0} disabled user(s)." -f ($disabledUsers.Count)) -TargetOUValue $TargetOU
+}
+catch {
+    Write-AuditLog -Action "QUERY" -Status "FAIL" -Message ("Failed querying disabled users: {0}" -f $_.Exception.Message) -TargetOUValue $TargetOU
+    throw
+}
+
+foreach ($user in $disabledUsers) {
+    $userDN = $user.DistinguishedName
+    $sam    = $user.SamAccountName
+
+    # Determine current OU path (best-effort parsing)
+    $sourceOU = ""
+    if ($userDN -match "^CN=.*?,(OU=.*)$") { $sourceOU = $Matches[1] }
+
+    # Skip if already in target OU (simple DN suffix check)
+    if ($userDN -like "*,$TargetOU") {
+        Write-AuditLog -Action "MOVE" -Status "SKIP" -SamAccountName $sam -UserDN $userDN -SourceOU $sourceOU -TargetOUValue $TargetOU `
+            -Message "User already in target OU."
+        continue
+    }
+
+    $targetMsg = "Move disabled user '$sam' to '$TargetOU'"
+
+    try {
+        if ($PSCmdlet.ShouldProcess($userDN, $targetMsg)) {
+            Move-ADObject -Identity $userDN -TargetPath $TargetOU -ErrorAction Stop
+
+            Write-AuditLog -Action "MOVE" -Status "OK" -SamAccountName $sam -UserDN $userDN -SourceOU $sourceOU -TargetOUValue $TargetOU `
+                -Message "Moved successfully."
+        }
+        else {
+            Write-AuditLog -Action "MOVE" -Status "WHATIF" -SamAccountName $sam -UserDN $userDN -SourceOU $sourceOU -TargetOUValue $TargetOU `
+                -Message "WhatIf: move not executed."
+        }
+    }
+    catch {
+        # Common: access denied, insufficient rights, object protected, etc.
+        Write-AuditLog -Action "MOVE" -Status "FAIL" -SamAccountName $sam -UserDN $userDN -SourceOU $sourceOU -TargetOUValue $TargetOU `
+            -Message ("Failed to move user: {0}" -f $_.Exception.Message)
+        continue
+    }
+}
+
+Write-AuditLog -Action "COMPLETE" -Status "OK" -Message "Run completed." -TargetOUValue $TargetOU
+
+Write-Host "Done. Log written to: $LogPath"
