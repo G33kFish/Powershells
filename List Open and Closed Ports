@@ -1,0 +1,156 @@
+<#
+Creates C:\iTech Solutions
+Scans TCP ports on the local system (common ports by default)
+Writes results to a text file in that folder and opens it in Notepad.
+
+Run: PowerShell (as user is fine). Admin not required for basic port checks.
+#>
+
+# ----------------------------
+# Settings
+# ----------------------------
+$FolderPath = "C:\iTech Solutions"
+$OutputFile = Join-Path $FolderPath "PortScan_Results_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+
+# Choose ports to scan (edit as needed)
+# Common workstation/server ports:
+$PortsToScan = @(
+    20,21,22,23,25,53,67,68,80,110,111,123,135,137,138,139,143,
+    161,389,443,445,465,587,636,993,995,1433,1521,2049,3306,3389,
+    5432,5900,5985,5986,6379,8080,8443
+)
+
+# Timeout per port in milliseconds
+$TimeoutMs = 350
+
+# ----------------------------
+# Ensure folder exists
+# ----------------------------
+if (-not (Test-Path -LiteralPath $FolderPath)) {
+    New-Item -Path $FolderPath -ItemType Directory -Force | Out-Null
+}
+
+# ----------------------------
+# Helper: Test TCP port locally
+# ----------------------------
+function Test-TcpPortLocal {
+    param(
+        [Parameter(Mandatory)]
+        [int]$Port,
+
+        [int]$Timeout = 300
+    )
+
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $iar = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
+        $connected = $iar.AsyncWaitHandle.WaitOne($Timeout, $false)
+
+        if (-not $connected) {
+            return [pscustomobject]@{ Port = $Port; Protocol = "TCP"; State = "Closed/Filtered"; Detail = "Timeout" }
+        }
+
+        $client.EndConnect($iar)
+        return [pscustomobject]@{ Port = $Port; Protocol = "TCP"; State = "Open"; Detail = "Connected" }
+    }
+    catch {
+        # Connection refused typically means closed; other errors may vary
+        $msg = $_.Exception.Message
+        $state = if ($msg -match "refused") { "Closed" } else { "Closed/Filtered" }
+        return [pscustomobject]@{ Port = $Port; Protocol = "TCP"; State = $state; Detail = $msg }
+    }
+    finally {
+        $client.Close()
+        $client.Dispose()
+    }
+}
+
+# ----------------------------
+# Run scan
+# ----------------------------
+$computerName = $env:COMPUTERNAME
+$now = Get-Date
+
+$results = foreach ($p in $PortsToScan | Sort-Object -Unique) {
+    Test-TcpPortLocal -Port $p -Timeout $TimeoutMs
+}
+
+# Also include currently listening TCP ports (ground truth)
+$listeners = @()
+try {
+    $listeners = Get-NetTCPConnection -State Listen -ErrorAction Stop |
+        Select-Object LocalAddress, LocalPort, OwningProcess |
+        Sort-Object LocalPort, LocalAddress
+}
+catch {
+    # Fallback for older systems without Get-NetTCPConnection
+    $netstat = netstat -ano -p tcp | Select-String "LISTENING"
+    $listeners = $netstat | ForEach-Object {
+        # netstat format varies; attempt a best-effort parse
+        $parts = ($_ -replace "\s+", " ").Trim().Split(" ")
+        $local = $parts[1]
+        $pid   = $parts[-1]
+        $addr, $port = $local.Split(":")
+        [pscustomobject]@{
+            LocalAddress  = $addr
+            LocalPort     = [int]$port
+            OwningProcess = [int]$pid
+        }
+    } | Sort-Object LocalPort, LocalAddress
+}
+
+# ----------------------------
+# Write report
+# ----------------------------
+$header = @"
+iTech Solutions - Local TCP Port Report
+Computer: $computerName
+Date:     $now
+
+Scan Target: 127.0.0.1 (this system)
+Scan Ports:  $($PortsToScan -join ", ")
+Timeout:     ${TimeoutMs}ms per port
+
+Legend:
+- Open: a service accepted a TCP connection on localhost
+- Closed: connection refused
+- Closed/Filtered: no response within timeout (could be filtered or not listening)
+"@
+
+$scanSection = $results |
+    Sort-Object Port |
+    Format-Table -AutoSize Port, Protocol, State, Detail |
+    Out-String
+
+$listeningSection = $listeners |
+    Format-Table -AutoSize LocalAddress, LocalPort, OwningProcess |
+    Out-String
+
+$openPorts = ($results | Where-Object State -eq "Open").Port
+$closedPorts = ($results | Where-Object State -ne "Open").Port
+
+$summary = @"
+Summary
+-------
+Open ports:   $($openPorts.Count)  => $($openPorts -join ", ")
+Not open:     $($closedPorts.Count) => $($closedPorts -join ", ")
+
+Currently LISTENING (from OS):
+------------------------------
+$listeningSection
+"@
+
+$body = @"
+$header
+
+Scan Results:
+-------------
+$scanSection
+
+$summary
+"@
+
+$body | Out-File -FilePath $OutputFile -Encoding UTF8 -Force
+
+# Open in Notepad
+Start-Process notepad.exe -ArgumentList "`"$OutputFile`""
