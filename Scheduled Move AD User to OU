@@ -1,0 +1,112 @@
+<#
+.SYNOPSIS
+  Scheduled Task–ready script to move disabled AD users to a target OU.
+
+.DESCRIPTION
+  - Designed for non-interactive execution (Task Scheduler).
+  - Uses transcript logging + optional custom log file.
+  - Exits with a non-zero code on fatal/preflight errors.
+  - Writes progress/errors to log (no Write-Host dependency).
+
+.REQUIREMENTS
+  - RSAT / ActiveDirectory module on the running host
+  - Task account has rights to read users + move objects into target OU
+#>
+
+# -------------------------------
+# Config (edit these)
+# -------------------------------
+$targetOU = "OU=DisabledUsers,DC=yourdomain,DC=com"
+
+# Use a directory your task account can write to
+$logRoot = "C:\ProgramData\AD-Maintenance\Logs"
+$customLog = Join-Path $logRoot "Move-DisabledUsers.log"
+$transcript = Join-Path $logRoot ("Move-DisabledUsers_{0}.txt" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+
+# -------------------------------
+# Logging helpers (Task Scheduler friendly)
+# -------------------------------
+function Write-Log {
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [ValidateSet("INFO","WARN","ERROR")][string]$Level = "INFO"
+    )
+
+    $entry = "{0} [{1}] {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Level, $Message
+
+    # Write to pipeline (captured by transcript and Task Scheduler history if configured)
+    Write-Output $entry
+
+    # Also persist to a rolling log file
+    try {
+        Add-Content -Path $customLog -Value $entry -ErrorAction Stop
+    } catch {
+        # Avoid failing the whole run if logging fails
+        Write-Output ("{0} [WARN] Could not write to log file '{1}': {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $customLog, $_)
+    }
+}
+
+# -------------------------------
+# Preflight
+# -------------------------------
+try {
+    if (-not (Test-Path $logRoot)) {
+        New-Item -Path $logRoot -ItemType Directory -Force | Out-Null
+    }
+
+    Start-Transcript -Path $transcript -Append -ErrorAction Stop
+} catch {
+    # If transcript fails, we still try to continue—Task Scheduler will capture stdout/stderr if configured
+    Write-Output ("{0} [WARN] Could not start transcript '{1}': {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $transcript, $_)
+}
+
+$ErrorActionPreference = "Stop"
+
+try {
+    Import-Module ActiveDirectory -ErrorAction Stop
+    Write-Log "ActiveDirectory module loaded."
+
+    # Validate target OU exists
+    Get-ADOrganizationalUnit -Identity $targetOU -ErrorAction Stop | Out-Null
+    Write-Log "Target OU validated: $targetOU"
+} catch {
+    Write-Log "Fatal preflight error: $_" "ERROR"
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 2
+}
+
+# -------------------------------
+# Main
+# -------------------------------
+try {
+    # Retrieve only required properties for efficiency
+    $disabledUsers = Get-ADUser -Filter { Enabled -eq $false } -Properties DistinguishedName, SamAccountName
+
+    $count = if ($null -eq $disabledUsers) { 0 } else { @($disabledUsers).Count }
+    Write-Log "Found $count disabled user account(s)."
+
+    $moved = 0
+    $failed = 0
+
+    foreach ($user in $disabledUsers) {
+        try {
+            Move-ADObject -Identity $user.DistinguishedName -TargetPath $targetOU -ErrorAction Stop
+            $moved++
+            Write-Log ("Moved user '{0}' to '{1}'" -f $user.SamAccountName, $targetOU)
+        } catch {
+            $failed++
+            Write-Log ("Failed to move user '{0}': {1}" -f $user.SamAccountName, $_) "ERROR"
+        }
+    }
+
+    Write-Log "Completed. Moved=$moved Failed=$failed"
+    try { Stop-Transcript | Out-Null } catch {}
+
+    # Exit codes: 0 success, 1 partial failures
+    if ($failed -gt 0) { exit 1 } else { exit 0 }
+
+} catch {
+    Write-Log "Unhandled fatal error: $_" "ERROR"
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 3
+}
